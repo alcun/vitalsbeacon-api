@@ -2,7 +2,6 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { connectRedis, getCache, setCache, getCacheStats } from './cache';
 import { queueAudit, getQueueStats } from './queue';
-import { streamSSE } from 'hono/streaming';
 import crypto from 'crypto';
 
 const app = new Hono();
@@ -11,10 +10,10 @@ app.use('*', cors());
 
 connectRedis();
 
-// Rate limiting store (in-memory, simple)
+// Simple rate limiting
 const rateLimits = new Map<string, { count: number; resetAt: number }>();
-const RATE_LIMIT = 10; // requests per hour
-const RATE_WINDOW = 60 * 60 * 1000; // 1 hour in ms
+const RATE_LIMIT = 50; // 50 requests per hour
+const RATE_WINDOW = 60 * 60 * 1000;
 
 function checkRateLimit(ip: string): { allowed: boolean; resetIn?: number } {
   const now = Date.now();
@@ -26,7 +25,7 @@ function checkRateLimit(ip: string): { allowed: boolean; resetIn?: number } {
   }
   
   if (limit.count >= RATE_LIMIT) {
-    const resetIn = Math.ceil((limit.resetAt - now) / 1000 / 60); // minutes
+    const resetIn = Math.ceil((limit.resetAt - now) / 1000 / 60);
     return { allowed: false, resetIn };
   }
   
@@ -44,7 +43,7 @@ app.get('/health', (c) => {
   return c.json({ 
     status: 'healthy',
     service: 'VitalsBeacon',
-    version: '2.0.0'
+    version: '2.1.0'
   });
 });
 
@@ -55,29 +54,56 @@ app.get('/', (c) => {
     <head>
       <title>VitalsBeacon API</title>
       <style>
-        body { font-family: system-ui; max-width: 800px; margin: 40px auto; padding: 0 20px; }
-        pre { background: #f5f5f5; padding: 15px; border-radius: 5px; overflow-x: auto; }
-        code { background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }
+        body { 
+          font-family: system-ui; 
+          max-width: 800px; 
+          margin: 40px auto; 
+          padding: 0 20px; 
+          line-height: 1.6;
+        }
+        pre { 
+          background: #f5f5f5; 
+          padding: 15px; 
+          border-radius: 5px; 
+          overflow-x: auto; 
+        }
+        code { 
+          background: #f5f5f5; 
+          padding: 2px 6px; 
+          border-radius: 3px; 
+        }
         a { color: #0066cc; }
+        .note {
+          background: #fff3cd;
+          border-left: 4px solid #ffc107;
+          padding: 12px;
+          margin: 20px 0;
+        }
       </style>
     </head>
     <body>
       <h1>🚨 VitalsBeacon - Core Web Vitals API</h1>
       <p>Lighthouse Performance Audits for Any Website</p>
       
+      <div class="note">
+        <strong>Note:</strong> Audits take 20-40 seconds. Cached results return instantly!
+      </div>
+      
       <h2>🚀 Quick Test</h2>
-      <p><a href="/audit?url=https://google.com">Test Google.com</a></p>
-      <p><a href="/audit?url=https://github.com&quick=true">Test GitHub.com (Quick Mode)</a></p>
+      <p><a href="/audit?url=https://google.com&quick=true">Test Google.com (Quick Mode)</a></p>
+      <p><a href="/audit?url=https://example.com">Test Example.com (Full Audit)</a></p>
       
-      <h2>📖 API Documentation</h2>
+      <h2>📖 API Usage</h2>
       
-      <h3>Basic Usage:</h3>
+      <h3>Basic Audit:</h3>
       <pre>GET /audit?url=https://example.com</pre>
+      <p>Returns all categories: Performance, Accessibility, Best Practices, SEO</p>
       
-      <h3>Quick Mode (Performance Only, Faster):</h3>
+      <h3>Quick Mode (Performance Only):</h3>
       <pre>GET /audit?url=https://example.com&quick=true</pre>
+      <p>Faster! Only runs performance audit (~15-20s instead of 30-40s)</p>
       
-      <h3>Specific Categories:</h3>
+      <h3>Custom Categories:</h3>
       <pre>GET /audit?url=https://example.com&categories=performance,seo</pre>
       
       <h3>Available Categories:</h3>
@@ -88,8 +114,34 @@ app.get('/', (c) => {
         <li><code>seo</code> - SEO optimization</li>
       </ul>
       
-      <h3>Rate Limits:</h3>
-      <p>10 audits per hour per IP address</p>
+      <h3>Response Format:</h3>
+      <pre>{
+  "url": "https://example.com",
+  "timestamp": "2025-10-17T12:00:00.000Z",
+  "scores": {
+    "performance": 95,
+    "accessibility": 88,
+    "bestPractices": 92,
+    "seo": 90
+  },
+  "coreWebVitals": {
+    "largestContentfulPaint": {
+      "value": "1.2 s",
+      "score": 100,
+      "rating": "good"
+    },
+    ...
+  },
+  "cached": false
+}</pre>
+      
+      <h3>⚡ Performance Tips:</h3>
+      <ul>
+        <li>Results are cached for 24 hours - second request is instant!</li>
+        <li>Use <code>quick=true</code> for faster audits</li>
+        <li>Queue limit: 10 audits at once</li>
+        <li>Rate limit: 50 audits per hour per IP</li>
+      </ul>
       
       <h3>Other Endpoints:</h3>
       <ul>
@@ -97,6 +149,9 @@ app.get('/', (c) => {
         <li><a href="/status">/status</a> - Queue & memory stats</li>
         <li><a href="/cache-stats">/cache-stats</a> - Redis cache info</li>
       </ul>
+      
+      <hr>
+      <p><small>Built with ❤️ using Lighthouse, Hono, and Bun</small></p>
     </body>
     </html>
   `);
@@ -136,7 +191,7 @@ app.get('/audit', async (c) => {
     let categories: string[];
     
     if (quick) {
-      categories = ['performance']; // Quick mode = performance only
+      categories = ['performance'];
     } else if (categoriesParam) {
       categories = categoriesParam.split(',').map(c => c.trim());
     } else {
@@ -157,7 +212,7 @@ app.get('/audit', async (c) => {
     // Create cache key
     const cacheKey = createCacheKey(url, categories);
     
-    // Check cache - if cached, return immediately
+    // Check cache - instant response!
     const cached = await getCache(cacheKey);
     if (cached) {
       console.log(`💾 Cache HIT: ${url}`);
@@ -180,52 +235,41 @@ app.get('/audit', async (c) => {
       }, 503);
     }
     
-    // Stream SSE for progress updates
-    return streamSSE(c, async (stream) => {
-      try {
-        // Send initial status
-        await stream.writeSSE({
-          data: JSON.stringify({
-            status: 'queued',
-            position: queueStats.queuedRequests + 1,
-            estimatedTime: `${(queueStats.queuedRequests + 1) * 30}s`
-          })
-        });
-        
-        // Send processing status
-        await stream.writeSSE({
-          data: JSON.stringify({
-            status: 'processing',
-            message: 'Launching Chrome and running Lighthouse audit...'
-          })
-        });
-        
-        // Run audit
-        const result = await queueAudit({ url, categories });
-        
-        // Cache it
-        await setCache(cacheKey, JSON.stringify(result), 1);
-        
-        // Send complete result
-        await stream.writeSSE({
-          data: JSON.stringify({
-            status: 'complete',
-            result: {
-              ...result,
-              cached: false
-            }
-          })
-        });
-        
-      } catch (error) {
-        await stream.writeSSE({
-          data: JSON.stringify({
-            status: 'error',
-            error: error instanceof Error ? error.message : 'Audit failed'
-          })
-        });
+    // Run audit (this will wait for the result)
+    try {
+      const result = await queueAudit({ url, categories });
+      
+      // Cache it
+      await setCache(cacheKey, JSON.stringify(result), 1);
+      
+      // Return result
+      return c.json({
+        ...result,
+        cached: false
+      });
+      
+    } catch (error) {
+      // Better error messages
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      
+      if (errorMessage.includes('timeout')) {
+        return c.json({
+          error: 'Audit timeout',
+          message: 'Site took too long to load (60s limit)',
+          url
+        }, 504);
       }
-    });
+      
+      if (errorMessage.includes('unreachable') || errorMessage.includes('ENOTFOUND')) {
+        return c.json({
+          error: 'Site unreachable',
+          message: 'Could not connect to the website',
+          url
+        }, 400);
+      }
+      
+      throw error; // Re-throw if unknown
+    }
     
   } catch (error) {
     console.error('Audit error:', error);
