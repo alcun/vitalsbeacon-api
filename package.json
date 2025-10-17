@@ -12,6 +12,6 @@
     "chrome-launcher": "^1.1.2"
   },
   "devDependencies": {
-    "@types/bun": "latest",
+    "@types/bun": "latest"
   }
 }
