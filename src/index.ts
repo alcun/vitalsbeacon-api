@@ -323,5 +323,6 @@ console.log(`🚨 VitalsBeacon running on port ${port}`);
 
 export default {
   port,
-  fetch: app.fetch
+  fetch: app.fetch,
+  idleTimeout: 120  
 };
